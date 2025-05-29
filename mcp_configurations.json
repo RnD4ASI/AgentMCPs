@@ -1,0 +1,155 @@
+[
+  {
+    "name": "Standard HTTPS/JSON MCP",
+    "description": "A common MCP configuration using HTTPS for secure communication and JSON for data interchange.",
+    "version": "1.1.0",
+    "protocol_details": {
+      "type": "HTTPS",
+      "endpoint": "https://api.example.com/mcp",
+      "port": 443,
+      "method": "POST"
+    },
+    "security_config": {
+      "auth_method": "OAuth2",
+      "encryption": "TLSv1.3",
+      "requires_client_certificate": false
+    },
+    "data_format_preferences": {
+      "supported_formats": ["JSON", "XML"],
+      "default_format": "JSON",
+      "schema_validation": "strict"
+    },
+    "custom_properties": {
+      "region": "us-west-1",
+      "sla": "99.95%"
+    }
+  },
+  {
+    "name": "High-Performance gRPC MCP",
+    "description": "MCP over gRPC for low-latency, high-throughput communication, typically used in internal microservices.",
+    "version": "2.0.1",
+    "protocol_details": {
+      "type": "gRPC",
+      "service_name": "com.example.MCPService",
+      "endpoint": "grpc.example.com",
+      "port": 50051
+    },
+    "security_config": {
+      "auth_method": "mTLS",
+      "encryption": "TLSv1.3",
+      "requires_client_certificate": true
+    },
+    "data_format_preferences": {
+      "supported_formats": ["protobuf"],
+      "default_format": "protobuf",
+      "protobuf_version": "proto3"
+    },
+    "custom_properties": {
+      "load_balancing": "round_robin",
+      "max_message_size_mb": 16
+    }
+  },
+  {
+    "name": "IoT MQTT-based MCP",
+    "description": "Lightweight MCP configuration for IoT devices using MQTT for messaging.",
+    "version": "0.8.5",
+    "protocol_details": {
+      "type": "MQTT",
+      "broker_url": "mqtt://iot.example.com",
+      "port": 1883,
+      "topic_context_request": "mcp/request",
+      "topic_context_response": "mcp/response"
+    },
+    "security_config": {
+      "auth_method": "TokenBased",
+      "encryption": "TLSv1.2 (optional)",
+      "username_secret_name": "mqtt_user_credentials"
+    },
+    "data_format_preferences": {
+      "supported_formats": ["JSON", "CBOR"],
+      "default_format": "CBOR",
+      "max_payload_size_kb": 128
+    },
+    "custom_properties": {
+      "qos_level": 1,
+      "retain_messages": false
+    }
+  },
+  {
+    "name": "Legacy SOAP/XML MCP",
+    "description": "MCP configuration for integrating with legacy systems that expose SOAP/XML web services.",
+    "version": "1.0.0-legacy",
+    "protocol_details": {
+      "type": "SOAP",
+      "endpoint": "http://legacy.example.com/mcp_service",
+      "port": 8080,
+      "wsdl_url": "http://legacy.example.com/mcp_service?wsdl"
+    },
+    "security_config": {
+      "auth_method": "WS-Security (UsernameToken)",
+      "encryption": "None (Transport level via VPN recommended)",
+      "requires_client_certificate": false
+    },
+    "data_format_preferences": {
+      "supported_formats": ["XML"],
+      "default_format": "XML",
+      "xml_schema_url": "http://legacy.example.com/schemas/mcp.xsd"
+    },
+    "custom_properties": {
+      "timeout_seconds": 60,
+      "soap_action_required": true
+    }
+  },
+  {
+    "name": "Simple HTTP/CSV MCP for Batch Data",
+    "description": "A basic MCP setup for transferring batch context data in CSV format over HTTP.",
+    "version": "0.5.0",
+    "protocol_details": {
+      "type": "HTTP",
+      "endpoint": "http://batchdata.example.com/mcp_upload",
+      "port": 80,
+      "method": "PUT"
+    },
+    "security_config": {
+      "auth_method": "APIKey",
+      "api_key_header": "X-API-KEY",
+      "encryption": "None (intended for internal networks or use VPN)"
+    },
+    "data_format_preferences": {
+      "supported_formats": ["CSV"],
+      "default_format": "CSV",
+      "csv_delimiter": ",",
+      "includes_header_row": true
+    },
+    "custom_properties": {
+      "data_retention_policy_days": 30,
+      "expected_file_encoding": "UTF-8"
+    }
+  },
+  {
+    "name": "Secure File Transfer (SFTP) MCP",
+    "description": "MCP configuration for exchanging context models as files over SFTP.",
+    "version": "1.2.0",
+    "protocol_details": {
+      "type": "SFTP",
+      "host": "sftp.example.com",
+      "port": 22,
+      "upload_directory": "/uploads/mcp",
+      "download_directory": "/downloads/mcp"
+    },
+    "security_config": {
+      "auth_method": "PublicKey",
+      "username": "mcp_user",
+      "requires_client_private_key": true
+    },
+    "data_format_preferences": {
+      "supported_formats": ["JSON", "XML", "YAML", "ProprietaryBinary"],
+      "default_format": "JSON",
+      "filename_convention": "model_{timestamp}_{version}.json"
+    },
+    "custom_properties": {
+      "transfer_mode": "binary",
+      "checksum_validation": "SHA256"
+    }
+  }
+]
