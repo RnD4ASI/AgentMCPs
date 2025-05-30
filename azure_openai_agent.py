@@ -3,52 +3,24 @@ import json
 import importlib.util
 import time
 import logging
-from openai import AzureOpenAI
+from openai import AzureOpenAI # Keep existing client
 
 # Setup basic logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
-# Memory file paths
+# Memory file paths (remain the same)
 FACTUAL_MEMORY_FILE = "azure_agent_factual_memory.json"
 PROCEDURAL_MEMORY_FILE = "azure_agent_procedural_memory.json"
-MCP_CONFIG_FILE = "mcp_configurations.json"
-
-# Custom MCP module paths (assuming they are in the same directory)
-CUSTOM_MCP_MODULES = {
-    "RealTimeStreamingMCP": {
-        "module_name": "custom_mcp_1",
-        "class_name": "RealTimeStreamingMCP",
-        "config_key": "streaming_mcp_config" # Key for specific config in agent's own config
-    },
-    "FederatedLearningMCP": {
-        "module_name": "custom_mcp_2",
-        "class_name": "FederatedLearningMCP",
-        "config_key": "federated_mcp_config"
-    },
-    "RobustMCP": {
-        "module_name": "custom_mcp_3",
-        "class_name": "RobustMCP",
-        "config_key": "robust_mcp_config"
-    }
-}
+# MCP Configuration File - THIS IS NEWLY CENTRAL
+MCP_CONFIG_FILE_PATH = "mcp_configurations.json" # Agent will load this
 
 class AzureOpenAIAgent:
     """
-    An AI agent that utilizes Azure OpenAI services and custom MCP tools,
-    with capabilities for managing factual and procedural memory.
+    An AI agent that utilizes Azure OpenAI services and is MCP-compliant,
+    interacting with skills defined in mcp_configurations.json.
     """
 
     def __init__(self, azure_api_key, azure_endpoint, azure_api_version="2023-12-01-preview", llm_deployment_name="gpt-35-turbo", agent_config=None):
-        """
-        Initializes the AzureOpenAIAgent.
-
-        Args:
-            azure_api_key (str): Azure OpenAI API key.
-            azure_endpoint (str): Azure OpenAI endpoint URL.
-            azure_api_version (str): Azure OpenAI API version.
-            llm_deployment_name (str): The name of the LLM deployment on Azure.
-            agent_config (dict, optional): Configuration for the agent, including MCP configs.
-        """
         if not all([azure_api_key, azure_endpoint, llm_deployment_name]):
             raise ValueError("Azure API key, endpoint, and LLM deployment name must be provided.")
 
@@ -56,7 +28,7 @@ class AzureOpenAIAgent:
         self.azure_endpoint = azure_endpoint
         self.azure_api_version = azure_api_version
         self.llm_deployment_name = llm_deployment_name
-        self.agent_config = agent_config if agent_config else {}
+        self.agent_config = agent_config if agent_config else {} # General agent config, not MCP specific skill configs anymore directly here
 
         try:
             self.openai_client = AzureOpenAI(
@@ -71,17 +43,18 @@ class AzureOpenAIAgent:
 
         self.factual_memory = self._load_memory(FACTUAL_MEMORY_FILE)
         self.procedural_memory = self._load_memory(PROCEDURAL_MEMORY_FILE)
-        
-        self.mcp_configurations = self._load_mcp_configs(MCP_CONFIG_FILE)
-        self.custom_mcps = self._load_custom_mcps()
-        logging.info("Agent initialized with memory and MCP tools.")
+
+        # Load MCP configurations
+        self.mcp_registry = self._load_mcp_registry(MCP_CONFIG_FILE_PATH)
+        if not self.mcp_registry:
+            raise RuntimeError("Failed to load MCP configurations. Agent cannot operate.")
+
+        logging.info("Agent initialized with memory and MCP registry.")
 
     def _load_memory(self, filepath):
-        """Loads memory from a JSON file."""
         try:
             if os.path.exists(filepath):
-                with open(filepath, 'r') as f:
-                    memory = json.load(f)
+                with open(filepath, 'r') as f: memory = json.load(f)
                 logging.info(f"Loaded memory from {filepath}.")
                 return memory
             else:
@@ -92,451 +65,314 @@ class AzureOpenAIAgent:
             return {}
 
     def _save_memory(self, filepath, data):
-        """Saves memory to a JSON file."""
         try:
-            with open(filepath, 'w') as f:
-                json.dump(data, f, indent=4)
+            with open(filepath, 'w') as f: json.dump(data, f, indent=4)
             logging.info(f"Saved memory to {filepath}.")
-        except Exception as e:
-            logging.error(f"Error saving memory to {filepath}: {e}")
+        except Exception as e: logging.error(f"Error saving memory to {filepath}: {e}")
 
     def add_factual_memory(self, fact_key, fact_value):
-        """Adds or updates a fact in factual memory."""
         self.factual_memory[fact_key] = fact_value
         self._save_memory(FACTUAL_MEMORY_FILE, self.factual_memory)
         logging.info(f"Added/Updated fact: '{fact_key}' = '{fact_value}'")
 
     def get_factual_memory(self, fact_key, default=None):
-        """Retrieves a fact from factual memory."""
-        value = self.factual_memory.get(fact_key, default)
-        logging.info(f"Retrieved fact: '{fact_key}' = '{value}'")
-        return value
+        return self.factual_memory.get(fact_key, default)
 
     def add_procedural_memory(self, task_name, steps):
-        """Adds or updates a procedure (sequence of actions) in procedural memory."""
-        self.procedural_memory[task_name] = {
-            "steps": steps,
-            "last_used_timestamp": time.time()
-        }
+        self.procedural_memory[task_name] = {"steps": steps, "last_used_timestamp": time.time()}
         self._save_memory(PROCEDURAL_MEMORY_FILE, self.procedural_memory)
-        logging.info(f"Added/Updated procedure: '{task_name}' with {len(steps)} steps.")
+        logging.info(f"Added/Updated procedure: '{task_name}'")
 
     def get_procedural_memory(self, task_name, default=None):
-        """Retrieves a procedure from procedural memory."""
-        procedure = self.procedural_memory.get(task_name, default)
-        if procedure:
-            logging.info(f"Retrieved procedure: '{task_name}'")
-        else:
-            logging.info(f"Procedure '{task_name}' not found.")
-        return procedure
+        return self.procedural_memory.get(task_name, default)
 
-    def find_relevant_procedure(self, query_keywords):
-        """
-        Finds a relevant procedure based on keywords in the query.
-        (Simple keyword matching for this version).
-        """
-        for task_name, procedure_data in self.procedural_memory.items():
-            if any(keyword.lower() in task_name.lower() for keyword in query_keywords):
-                logging.info(f"Found relevant procedure '{task_name}' for keywords: {query_keywords}")
-                return procedure_data
-        logging.info(f"No specific procedure found for keywords: {query_keywords}")
-        return None
-
-    def _load_mcp_configs(self, filepath):
-        """Loads MCP configurations from the JSON file."""
+    def _load_mcp_registry(self, filepath):
+        """Loads MCP configurations (skills, models, context_types)."""
         try:
             if os.path.exists(filepath):
                 with open(filepath, 'r') as f:
-                    configs = json.load(f)
-                logging.info(f"Loaded MCP configurations from {filepath}.")
-                return configs
+                    registry = json.load(f)
+                logging.info(f"Loaded MCP registry from {filepath}.")
+                # Store skills in a dictionary for easy lookup by ID
+                registry['skills_map'] = {skill['id']: skill for skill in registry.get('skills', [])}
+                return registry
             else:
-                logging.warning(f"MCP configuration file {filepath} not found.")
-                return []
+                logging.error(f"MCP configuration file {filepath} not found.")
+                return None
         except Exception as e:
-            logging.error(f"Error loading MCP configurations from {filepath}: {e}")
-            return []
-
-    def _load_custom_mcps(self):
-        """Dynamically loads and instantiates custom MCP classes."""
-        mcps = {}
-        for mcp_name, mcp_details in CUSTOM_MCP_MODULES.items():
-            try:
-                module_path = f"{mcp_details['module_name']}.py"
-                spec = importlib.util.spec_from_file_location(mcp_details['module_name'], module_path)
-                if spec and spec.loader:
-                    module = importlib.util.module_from_spec(spec)
-                    spec.loader.exec_module(module)
-                    mcp_class = getattr(module, mcp_details['class_name'])
-                    
-                    # Get specific config for this MCP from agent_config if available
-                    mcp_specific_config_key = mcp_details.get('config_key')
-                    mcp_instance_config = self.agent_config.get(mcp_specific_config_key, {})
-
-                    if mcp_details['class_name'] == "FederatedLearningMCP": # Requires specific args
-                        # Example: provide a default model ID or get from agent_config
-                        model_id = mcp_instance_config.get("global_model_id", "default_global_model")
-                        mcps[mcp_name] = mcp_class(global_model_id=model_id)
-                    else: # Assumes other MCPs take a single 'config' dict
-                        mcps[mcp_name] = mcp_class(config=mcp_instance_config)
-                    logging.info(f"Successfully loaded and instantiated MCP: {mcp_name}")
-                else:
-                    logging.error(f"Could not create spec for module {mcp_details['module_name']} at {module_path}")
-            except FileNotFoundError:
-                logging.error(f"Custom MCP file {module_path} not found.")
-            except AttributeError:
-                logging.error(f"Class {mcp_details['class_name']} not found in module {mcp_details['module_name']}.")
-            except Exception as e:
-                logging.error(f"Failed to load custom MCP {mcp_name}: {e}")
-        return mcps
-
-    def _get_openai_completion(self, prompt, max_tokens=150, temperature=0.7):
-        """
-        Gets a completion from Azure OpenAI.
-
-        Args:
-            prompt (str): The prompt to send to the LLM.
-            max_tokens (int): Maximum number of tokens for the completion.
-            temperature (float): Sampling temperature.
-
-        Returns:
-            str: The completion text, or an error message.
-        """
-        try:
-            response = self.openai_client.completions.create(
-                model=self.llm_deployment_name, # This should be your deployment name for a completion model
-                prompt=prompt,
-                max_tokens=max_tokens,
-                temperature=temperature
-            )
-            logging.info(f"Azure OpenAI API call successful. Prompt: '{prompt[:50]}...'")
-            return response.choices[0].text.strip()
-        except Exception as e:
-            logging.error(f"Azure OpenAI API call failed: {e}")
-            if "DeploymentNotFound" in str(e) or "ResourceNotFound" in str(e):
-                 return f"Error: LLM Deployment '{self.llm_deployment_name}' not found. Please check the deployment name and API configuration."
-            return f"Error communicating with Azure OpenAI: {str(e)}"
+            logging.error(f"Error loading MCP registry from {filepath}: {e}")
+            return None
 
     def _get_openai_chat_completion(self, messages, max_tokens=150, temperature=0.7):
-        """
-        Gets a chat completion from Azure OpenAI (for models like GPT-3.5-Turbo and GPT-4).
-
-        Args:
-            messages (list): A list of message objects (e.g., [{"role": "user", "content": "Hello"}]).
-            max_tokens (int): Maximum number of tokens for the completion.
-            temperature (float): Sampling temperature.
-
-        Returns:
-            str: The completion text, or an error message.
-        """
+        """Gets a chat completion from Azure OpenAI."""
         try:
             response = self.openai_client.chat.completions.create(
-                model=self.llm_deployment_name, # This should be your deployment name for a chat model
+                model=self.llm_deployment_name,
                 messages=messages,
                 max_tokens=max_tokens,
                 temperature=temperature
             )
-            logging.info(f"Azure OpenAI Chat API call successful. Messages: {messages}")
+            logging.info("Azure OpenAI Chat API call successful.")
             return response.choices[0].message.content.strip()
         except Exception as e:
             logging.error(f"Azure OpenAI Chat API call failed: {e}")
             if "DeploymentNotFound" in str(e) or "ResourceNotFound" in str(e):
-                 return f"Error: LLM Deployment '{self.llm_deployment_name}' not found. Please check the deployment name and API configuration."
-            return f"Error communicating with Azure OpenAI (Chat): {str(e)}"
+                 return f"LLM_ERROR: Deployment '{self.llm_deployment_name}' not found." # Prefix for easier parsing
+            return f"LLM_ERROR: Error communicating with Azure OpenAI (Chat): {str(e)}"
 
     def _determine_intent_and_params_with_llm(self, query):
-        """
-        Uses LLM to determine user intent, required MCP, and parameters.
-        This is a more advanced approach than simple keyword matching.
-        """
-        mcp_tool_descriptions = []
-        for name, mcp_instance in self.custom_mcps.items():
-            mcp_tool_descriptions.append(f"- {name}: {mcp_instance.__doc__.splitlines()[0].strip() if mcp_instance.__doc__ else 'No description'}")
-        
-        mcp_config_descriptions = []
-        for config in self.mcp_configurations:
-            mcp_config_descriptions.append(f"- Name: {config.get('name')}, Description: {config.get('description')}, Protocol: {config.get('protocol_details', {}).get('type')}")
-
-        system_prompt = f"""
-You are an AI assistant that helps users by leveraging a set of available tools (MCPs - Model Context Protocols)
-and pre-defined MCP configurations. Your goal is to understand the user's query, identify if a specific
-MCP tool or a general MCP configuration is needed, and extract necessary parameters.
-
-Available Custom MCP Tools:
-{json.dumps(CUSTOM_MCP_MODULES, indent=2)}
-
-Available Pre-defined MCP Configurations (from mcp_configurations.json):
-{json.dumps(self.mcp_configurations[:2], indent=2)} (Showing first 2 for brevity)
-
-Respond in JSON format with the following fields:
-- "intent": A brief description of what the user wants to do.
-- "mcp_tool_name": The name of the custom MCP tool to use (e.g., "RealTimeStreamingMCP", "FederatedLearningMCP", "RobustMCP"), or "None" if no specific custom tool is directly applicable or if a generic configuration is more suitable.
-- "mcp_config_name": The name of a pre-defined MCP configuration to use from mcp_configurations.json (e.g., "Standard HTTPS/JSON MCP"), or "None".
-- "parameters": A dictionary of parameters needed for the MCP or to fulfill the query. For custom MCPs, these are parameters for their methods.
-- "requires_further_clarification": boolean, true if you cannot determine the above with confidence.
-- "clarification_question": string, a question to ask the user if requires_further_clarification is true.
-- "response_to_user": A direct, friendly response to the user if no tool is needed or if clarification is needed.
-
-Example Query: "I need to process a stream of sensor data for anomalies."
-Example JSON Response:
-{{
-  "intent": "Process real-time sensor data for anomaly detection",
-  "mcp_tool_name": "RealTimeStreamingMCP",
-  "mcp_config_name": null,
-  "parameters": {{ "raw_data_json": "User needs to provide this or specify source" }},
-  "requires_further_clarification": true,
-  "clarification_question": "Could you please provide the sensor data stream or tell me where to get it?",
-  "response_to_user": "I can help with that. I'll use the RealTimeStreamingMCP. Could you please provide the sensor data stream or tell me where to get it?"
-}}
-
-If the query is about past actions or stored information, try to use that from memory.
-Factual Memory available (keys only): {list(self.factual_memory.keys())}
-Procedural Memory available (task names only): {list(self.procedural_memory.keys())}
-"""
-        
-        messages = [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": query}
+        """Uses LLM to determine user intent, required skill_id, and parameters."""
+        skills_info_for_prompt = [
+            {"skill_id": skill['id'], "name": skill['name'], "description": skill['description'], "parameters": skill.get('parameters', [])}
+            for skill in self.mcp_registry.get('skills', [])
         ]
 
-        llm_response_str = self._get_openai_chat_completion(messages=messages, max_tokens=500, temperature=0.2)
-        
+        system_prompt = f"""
+You are an AI assistant. Your task is to understand the user's query and determine if it can be addressed using one of your available skills.
+Respond ONLY in JSON format with the following fields:
+- "intent": A brief description of what the user wants to do.
+- "skill_id": The ID of the skill to use (e.g., "realtime_data_processor", "federated_model_aggregator"). Choose from the list below. If no skill is appropriate, use "None".
+- "parameters": A dictionary of parameters required by the chosen skill. These parameters must match the skill's definition.
+- "requires_further_clarification": boolean, true if you cannot determine the above with confidence or if essential parameters for a skill are missing.
+- "clarification_question": string, a question to ask the user if 'requires_further_clarification' is true.
+- "response_to_user": A direct, friendly response to the user if no skill is needed or if clarification is needed.
+
+Available Skills:
+{json.dumps(skills_info_for_prompt, indent=2)}
+
+Factual Memory Keys (for context, not for direct parameter filling unless user implies it): {list(self.factual_memory.keys())}
+
+Example Query: "Process this sensor data: '[{{\"id\":\"s1\", \"val\":10}}]'"
+Example JSON Response:
+{{
+  "intent": "Process real-time sensor data",
+  "skill_id": "realtime_data_processor",
+  "parameters": {{ "raw_data_json": "[{{\\"id\\":\\"s1\\", \\"val\\":10}}]" }},
+  "requires_further_clarification": false,
+  "clarification_question": "None",
+  "response_to_user": "I will process your sensor data."
+}}
+
+User Query: "{query}"
+Your JSON Output:
+"""
+        messages = [{"role": "system", "content": system_prompt}, {"role": "user", "content": query}]
+        llm_response_str = self._get_openai_chat_completion(messages=messages, max_tokens=600, temperature=0.1)
+
+        if llm_response_str.startswith("LLM_ERROR:"):
+            logging.error(f"LLM communication error: {llm_response_str}")
+            return {
+                "intent": "LLM Error", "skill_id": None, "parameters": {},
+                "requires_further_clarification": True,
+                "clarification_question": "I'm having trouble with my core processing unit. Please try again later.",
+                "response_to_user": "I'm currently unable to process requests. Please try again later."
+            }
         try:
             parsed_response = json.loads(llm_response_str)
             logging.info(f"LLM Intent Response (parsed): {parsed_response}")
             return parsed_response
         except json.JSONDecodeError:
             logging.error(f"Failed to parse LLM response as JSON: {llm_response_str}")
-            # Fallback or error handling
             return {
-                "intent": "Error in understanding query", 
-                "mcp_tool_name": None, 
-                "mcp_config_name": None,
-                "parameters": {}, 
+                "intent": "LLM Parsing Error", "skill_id": None, "parameters": {},
                 "requires_further_clarification": True,
-                "clarification_question": "I had trouble understanding your request. Could you please rephrase?",
-                "response_to_user": "I'm having a little trouble understanding. Could you try asking in a different way?"
+                "clarification_question": "I'm having trouble understanding the structure of that request. Could you rephrase?",
+                "response_to_user": "My response parsing failed. Could you try asking in a different way?"
             }
 
+    def _prepare_skill_context(self, skill_id: str) -> dict:
+        """Prepares the context dictionary for a skill based on its definition."""
+        context_data = {}
+        skill_def = self.mcp_registry.get('skills_map', {}).get(skill_id)
+        if not skill_def or 'expected_context' not in skill_def:
+            return context_data # No specific context expected or skill not found
 
-    def use_custom_mcp(self, mcp_name, method_name, params):
-        """
-        Invokes a method on a specified custom MCP instance.
+        for context_key_id in skill_def['expected_context']:
+            context_type_def = next((ct for ct in self.mcp_registry.get('context_types', []) if ct['id'] == context_key_id), None)
+            if not context_type_def:
+                logging.warning(f"Definition for expected context key '{context_key_id}' not found in mcp_registry.")
+                continue
 
-        Args:
-            mcp_name (str): The name of the custom MCP tool (e.g., "RealTimeStreamingMCP").
-            method_name (str): The method to call on the MCP instance.
-            params (dict): A dictionary of parameters to pass to the MCP method. 
-                           If a parameter is a string "GET_FROM_FACTUAL_MEMORY:<key>",
-                           it will be fetched from factual memory.
+            # This is where we'd populate context from agent's state/memory
+            if context_key_id == "factual_memory_snapshot":
+                context_data[context_key_id] = self.factual_memory.copy()
+            elif context_key_id == "procedural_memory_snapshot":
+                context_data[context_key_id] = self.procedural_memory.copy()
+            # Add more context population logic as needed based on context_types
+            # For now, skills primarily get data via parameters.
+            else:
+                # If skill expects other specific context data that agent might have, populate here.
+                # Example: context_data[context_key_id] = self.some_internal_state.get(context_key_id_data)
+                logging.info(f"Context key '{context_key_id}' expected by skill '{skill_id}', but no specific agent data source defined for it yet beyond memory snapshots.")
 
-        Returns:
-            The result from the MCP method, or an error message.
-        """
-        if mcp_name not in self.custom_mcps:
-            logging.error(f"Custom MCP '{mcp_name}' not found.")
-            return f"Error: Custom MCP tool '{mcp_name}' is not available."
+        # Add general agent config or other relevant info if skills might need it
+        context_data['agent_name'] = "AzureOpenAIAgent"
+        context_data['llm_deployment_name'] = self.llm_deployment_name
 
-        mcp_instance = self.custom_mcps[mcp_name]
-        if not hasattr(mcp_instance, method_name):
-            logging.error(f"Method '{method_name}' not found in MCP '{mcp_name}'.")
-            return f"Error: Method '{method_name}' does not exist for MCP '{mcp_name}'."
+        logging.info(f"Prepared context for skill '{skill_id}': {list(context_data.keys())}")
+        return context_data
 
-        # Resolve parameters from factual memory if specified
-        resolved_params = {}
-        if isinstance(params, dict):
-            for key, value in params.items():
-                if isinstance(value, str) and value.startswith("GET_FROM_FACTUAL_MEMORY:"):
-                    mem_key = value.split(":", 1)[1]
-                    resolved_params[key] = self.get_factual_memory(mem_key)
-                    if resolved_params[key] is None:
-                        logging.warning(f"Memory key {mem_key} not found for MCP parameter {key}")
-                        return f"Error: Required information '{mem_key}' not found in memory for MCP {mcp_name}."
-                else:
-                    resolved_params[key] = value
-        elif params is not None: # if params is not a dict but also not None (e.g. a single string for some methods)
-             resolved_params = params
+    def invoke_mcp_skill(self, skill_id: str, parameters: dict, context_data: dict) -> dict:
+        """Dynamically loads and invokes an MCP skill."""
+        logging.info(f"Attempting to invoke skill '{skill_id}' with parameters: {parameters}")
+        skill_def = self.mcp_registry.get('skills_map', {}).get(skill_id)
 
+        if not skill_def:
+            logging.error(f"Skill definition for ID '{skill_id}' not found in MCP registry.")
+            return {"status": "error", "error_message": f"Skill '{skill_id}' not defined."}
+
+        module_name = skill_def.get('handler_module')
+        handler_path = skill_def.get('handler_class_or_function')
+
+        if not module_name or not handler_path:
+            logging.error(f"Skill '{skill_id}' is missing 'handler_module' or 'handler_class_or_function'.")
+            return {"status": "error", "error_message": f"Skill '{skill_id}' is not configured correctly for invocation."}
 
         try:
-            method_to_call = getattr(mcp_instance, method_name)
-            logging.info(f"Calling MCP '{mcp_name}', method '{method_name}' with params: {resolved_params}")
-            
-            # Note: The custom MCPs expect specific argument structures.
-            # This is a simplified invocation. Real implementation might need more sophisticated arg mapping.
-            if isinstance(resolved_params, dict):
-                result = method_to_call(**resolved_params)
-            elif resolved_params is not None: # for methods that take a single non-dict argument
-                result = method_to_call(resolved_params)
-            else: # for methods that take no arguments
-                result = method_to_call()
+            # Dynamically import the module
+            # Assuming skill modules are in the same directory or Python path
+            # Module path needs to be resolvable e.g. 'realtime_processing_skill'
+            skill_module_path_py = f"{module_name}.py"
 
-            logging.info(f"MCP '{mcp_name}' method '{method_name}' executed. Result: {str(result)[:100]}...") # Log snippet of result
-            self.add_procedural_memory(
-                task_name=f"Executed {mcp_name}.{method_name}",
-                steps=[f"Called {method_name} on {mcp_name} with {params}", f"Result: {str(result)[:100]}..."]
-            )
-            return result if result is not None else "MCP method executed, no specific result returned."
+            # Check if module is already imported (e.g. by other agents or tests)
+            if module_name in sys.modules:
+                skill_module = sys.modules[module_name]
+                # Optionally reload if changes are frequent during dev: importlib.reload(skill_module)
+            else:
+                spec = importlib.util.spec_from_file_location(module_name, skill_module_path_py)
+                if spec is None or spec.loader is None: # Check spec and loader
+                    raise ImportError(f"Could not create module spec for {module_name} at {skill_module_path_py}. Ensure file exists.")
+                skill_module = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(skill_module)
+
+            handler_parts = handler_path.split('.')
+            obj_or_func = getattr(skill_module, handler_parts[0])
+
+            if len(handler_parts) > 1: # Class method
+                instance = obj_or_func() # Assumes constructor takes no args or uses skill_config from agent
+                handler_method = getattr(instance, handler_parts[1])
+                skill_response = handler_method(parameters, context_data)
+            else: # Direct function
+                skill_response = obj_or_func(parameters, context_data)
+
+            logging.info(f"Skill '{skill_id}' executed successfully. Response status: {skill_response.get('status')}")
+            return skill_response
+
+        except FileNotFoundError:
+            logging.error(f"Skill module file not found: {skill_module_path_py}")
+            return {"status": "error", "error_message": f"Skill module '{module_name}.py' not found."}
+        except (AttributeError, ImportError) as e:
+            logging.error(f"Error loading/finding handler for skill '{skill_id}': {e}")
+            return {"status": "error", "error_message": f"Could not load handler for skill '{skill_id}': {e}"}
         except Exception as e:
-            logging.error(f"Error executing MCP '{mcp_name}' method '{method_name}': {e}")
-            return f"Error during MCP execution: {str(e)}"
+            logging.exception(f"Exception during skill '{skill_id}' execution: {e}") # Log full stack trace
+            return {"status": "error", "error_message": f"Skill '{skill_id}' execution failed: {str(e)}"}
 
+    def process_query(self, query: str) -> str:
+        """Processes a user query using MCP-compliant skills."""
+        logging.info(f"\n--- Processing Query (Azure Agent): '{query}' ---")
 
-    def process_query(self, query):
-        """
-        Processes a user query, determines intent, uses tools, and manages memory.
-
-        Args:
-            query (str): The user's query.
-
-        Returns:
-            str: A response to the user.
-        """
-        logging.info(f"\n--- Processing Query: '{query}' ---")
-
-        # 1. Understand Intent and Parameters using LLM
         intent_data = self._determine_intent_and_params_with_llm(query)
-        
-        response_to_user = intent_data.get("response_to_user", "I'm processing your request.")
-        
+
+        skill_id = intent_data.get("skill_id")
+        parameters = intent_data.get("parameters")
+        response_to_user = intent_data.get("response_to_user", "I'm working on your request.")
+
         if intent_data.get("requires_further_clarification"):
             self.add_factual_memory("last_clarification_for_query", query)
             self.add_factual_memory("last_clarification_question", intent_data.get("clarification_question"))
             return intent_data.get("clarification_question", response_to_user)
 
-        mcp_tool_name = intent_data.get("mcp_tool_name")
-        mcp_config_name = intent_data.get("mcp_config_name")
-        params = intent_data.get("parameters", {})
+        if skill_id and skill_id != "None":
+            logging.info(f"LLM determined skill: '{skill_id}' with params: {parameters}")
+            skill_context = self._prepare_skill_context(skill_id)
+            skill_result = self.invoke_mcp_skill(skill_id, parameters, skill_context)
 
-        # 2. Execute MCP tool if identified
-        if mcp_tool_name and mcp_tool_name != "None":
-            # This is a simplification. The LLM needs to also suggest the method.
-            # For now, let's assume a default method or try to infer.
-            # Example: RealTimeStreamingMCP might have 'process_stream_data'
-            # This part needs refinement for robust method dispatch.
-            default_methods = {
-                "RealTimeStreamingMCP": "process_stream_data",
-                "FederatedLearningMCP": "get_global_model", # Or based on params, e.g. "submit_model_update"
-                "RobustMCP": "process_message"
-            }
-            method_to_call = params.pop("method_name", default_methods.get(mcp_tool_name))
+            if skill_result.get("status") == "success":
+                # Agent might format this data further or use it to update memory/state
+                # For now, construct a simple success message.
+                response_to_user = f"Skill '{skill_id}' executed successfully. Output: {json.dumps(skill_result.get('data', 'No data returned'))}"
+                self.add_procedural_memory(
+                    task_name=f"Skill Execution: {skill_id}",
+                    steps=[f"Query: {query}", f"Parameters: {parameters}", f"Result data: {skill_result.get('data')}"]
+                )
+                # Handle potential context updates suggested by the skill
+                if "context_updates_suggestion" in skill_result:
+                    logging.info(f"Skill '{skill_id}' suggested context updates: {skill_result['context_updates_suggestion']}")
+                    # Here, the agent would decide how to merge/apply these suggestions to its main context or memory.
+                    # For example, updating self.factual_memory or a session context.
+                    # This part needs careful design based on how state is managed.
+                    # E.g., self.factual_memory.update(skill_result['context_updates_suggestion'].get('factual_memory_snapshot', {}))
 
-            if not method_to_call:
-                response_to_user = f"I identified {mcp_tool_name} but I'm unsure which action to perform with it. Can you be more specific?"
-                self.add_procedural_memory(f"Query for {mcp_tool_name}", [query, f"Uncertain on method for {mcp_tool_name}"])
-            else:
-                # The parameters from LLM might need to be structured correctly for the method
-                # e.g. process_stream_data expects 'raw_data_json'
-                # e.g. submit_model_update expects 'participant_id', 'round_id', 'model_update_json'
-                # This mapping is crucial and complex.
-                mcp_result = self.use_custom_mcp(mcp_name=mcp_tool_name, method_name=method_to_call, params=params.get("mcp_params", params)) # pass params directly or nested under mcp_params
-                response_to_user = f"Used {mcp_tool_name}: {str(mcp_result)[:200]}..."
-                self.add_factual_memory(f"last_mcp_result_{mcp_tool_name}", str(mcp_result)[:500]) # Store snippet of result
-        
-        elif mcp_config_name and mcp_config_name != "None":
-            selected_config = next((c for c in self.mcp_configurations if c.get("name") == mcp_config_name), None)
-            if selected_config:
-                response_to_user = f"Found MCP configuration: '{mcp_config_name}'. Details: {selected_config['protocol_details']}. How would you like to use this?"
-                self.add_factual_memory("last_selected_mcp_config", selected_config)
-                self.add_procedural_memory(f"Query for MCP Config", [query, f"Identified config: {mcp_config_name}"])
-            else:
-                response_to_user = f"Could not find details for MCP configuration: '{mcp_config_name}'."
-                self.add_procedural_memory(f"Query for MCP Config", [query, f"Failed to find config: {mcp_config_name}"])
-        
-        # If no specific tool/config was used, but LLM provided a direct response
-        elif not (mcp_tool_name and mcp_tool_name != "None") and not (mcp_config_name and mcp_config_name != "None") and intent_data.get("response_to_user"):
-             response_to_user = intent_data.get("response_to_user")
-             self.add_procedural_memory("General query", [query, f"LLM response: {response_to_user}"])
+            else: # Error or other non-success status from skill
+                error_msg = skill_result.get("error_message", "Skill execution failed with no specific error message.")
+                response_to_user = f"Error executing skill '{skill_id}': {error_msg}"
+                self.add_procedural_memory(
+                    task_name=f"Skill Execution Failed: {skill_id}",
+                    steps=[f"Query: {query}", f"Parameters: {parameters}", f"Error: {error_msg}"]
+                )
+        elif skill_id == "None" and intent_data.get("response_to_user"):
+            # LLM decided no skill is needed and provided a direct response
+            response_to_user = intent_data.get("response_to_user")
+            self.add_procedural_memory("General query (no skill)", [query, f"LLM direct response: {response_to_user}"])
+        else: # Fallback if LLM response was unclear or errored but didn't require clarification
+            logging.warning("LLM did not identify a skill and no direct response was provided. Using general fallback.")
+            response_to_user = "I understood your query, but I'm not sure how to act on it with my current skills."
+            # Or, make another LLM call for a general chat response if desired.
+            # For now, this simple message.
 
-
-        # 3. Fallback or General LLM interaction if no tool was used and no direct response from intent parsing
-        if not mcp_tool_name and not mcp_config_name and not intent_data.get("requires_further_clarification") and not intent_data.get("response_to_user"):
-            logging.info("No specific tool or config identified. Using general LLM completion for response.")
-            # This could be a simple echo, or a more sophisticated chat interaction
-            # For now, we use the initial response_to_user which might have been set by the LLM.
-            # If not, we can make another call.
-            if response_to_user == "I'm processing your request.": # Default value if LLM didn't give one
-                 response_to_user = self._get_openai_chat_completion(
-                     messages=[{"role": "user", "content": query}],
-                     max_tokens=100
-                 )
-                 self.add_procedural_memory("General query", [query, f"LLM fallback response: {response_to_user}"])
-
-
-        logging.info(f"Final Response: {response_to_user}")
+        logging.info(f"Final Response (Azure Agent): {response_to_user}")
         return response_to_user
 
-# Example Usage (Illustrative - requires Azure credentials and custom MCP files)
+
 if __name__ == '__main__':
     AZURE_OAI_KEY = os.environ.get("AZURE_OAI_KEY")
     AZURE_OAI_ENDPOINT = os.environ.get("AZURE_OAI_ENDPOINT")
-    AZURE_OAI_LLM_DEPLOYMENT = os.environ.get("AZURE_OAI_LLM_DEPLOYMENT", "gpt-35-turbo") # Or your specific chat model deployment
+    AZURE_OAI_LLM_DEPLOYMENT = os.environ.get("AZURE_OAI_LLM_DEPLOYMENT", "gpt-35-turbo")
 
     if not AZURE_OAI_KEY or not AZURE_OAI_ENDPOINT:
         print("Error: AZURE_OAI_KEY and AZURE_OAI_ENDPOINT environment variables must be set.")
-        print("Skipping AzureOpenAIAgent demo.")
+    elif not os.path.exists(MCP_CONFIG_FILE_PATH):
+        print(f"Error: MCP Configuration file not found at {MCP_CONFIG_FILE_PATH}")
+    elif not all(os.path.exists(f"{skill_def['handler_module']}.py") for skill_def in json.load(open(MCP_CONFIG_FILE_PATH))['skills']):
+        print("Error: Not all skill handler module files (e.g., realtime_processing_skill.py) found in the current directory.")
     else:
-        print("--- AzureOpenAIAgent Demo ---")
-        
-        # Dummy config for custom MCPs (as an example)
-        agent_specific_mcp_configs = {
-            "streaming_mcp_config": {
-                'validation_rules': {
-                    'sensor_id': {'type': str},
-                    'value': {'type': float, 'min': 0.0, 'max': 100.0}
-                },
-                'transformation_map': {} 
-            },
-            "federated_mcp_config": {
-                "global_model_id": "agent_demo_model_v1"
-            },
-            "robust_mcp_config": {
-                'max_retries': 1, # For faster demo
-                'base_retry_delay_seconds': 0.1,
-            }
-        }
-
+        print("--- AzureOpenAIAgent MCP-Compliant Demo ---")
         try:
             agent = AzureOpenAIAgent(
                 azure_api_key=AZURE_OAI_KEY,
                 azure_endpoint=AZURE_OAI_ENDPOINT,
-                llm_deployment_name=AZURE_OAI_LLM_DEPLOYMENT,
-                agent_config=agent_specific_mcp_configs
+                llm_deployment_name=AZURE_OAI_LLM_DEPLOYMENT
             )
 
-            # Test Factual Memory
-            agent.add_factual_memory("user_preference_data_format", "JSON")
-            print(f"User's preferred format: {agent.get_factual_memory('user_preference_data_format')}")
+            agent.add_factual_memory("user_id", "user_123_azure")
+            print(f"Initial factual memory: {agent.factual_memory}")
 
-            # Test Procedural Memory
-            agent.add_procedural_memory("initial_setup_task", ["Checked credentials", "Loaded MCPs", "Initialized memory"])
-            print(f"Setup procedure: {agent.get_procedural_memory('initial_setup_task')}")
-
-            # Example Queries
             queries = [
-                "Hello, what can you do?",
-                "I have some real-time sensor data that needs processing. It's in JSON format: '[{\"sensor_id\": \"temp01\", \"value\": 25.5}]'",
-                "What was the last thing I asked you to do with sensor data?", # Tests memory recall via LLM
-                "Can you show me a robust way to send a message? The message is '{\"id\": \"test001\", \"payload\": {\"data\": \"important_payload\", \"force_failure_type\": \"transient\"}}'",
-                "Tell me about the standard HTTPS JSON MCP configuration.",
-                "What are the steps for federated learning model aggregation?", # Tries to get procedural info via LLM
-                "My name is Bob and I like XML." # Simple fact storing via LLM
+                "Hello there!",
+                "Please process this data stream: '[{\"id\":\"sensor1\", \"temperature_celsius\":30}]'",
+                "Start federated learning round 10.",
+                "Submit an update for round 10 from participant P7 with data '{\"weights_delta\":[0.1], \"bias_delta\":0.01, \"data_samples_count\":50}'.",
+                "Aggregate updates for round 10 using weighted_average.",
+                "Handle this message robustly: '{\"id\":\"m001\", \"payload\":{\"data\":\"important info\"}}'",
+                "What's the capital of France?" # Should be handled by LLM directly or general knowledge
             ]
 
             for q in queries:
                 response = agent.process_query(q)
                 print(f"\nUser Query: {q}\nAgent Response: {response}")
-                time.sleep(2) # To avoid hitting rate limits if any and for readability
+                time.sleep(2)
 
-            print("\n--- Final Memory States ---")
-            print(f"Factual Memory: {json.dumps(agent.factual_memory, indent=2)}")
-            print(f"Procedural Memory: {json.dumps(agent.procedural_memory, indent=2)}")
+            print("\n--- Final Factual Memory (Azure Agent) ---")
+            print(json.dumps(agent.factual_memory, indent=2))
+            print("\n--- Final Procedural Memory (Azure Agent) ---")
+            print(json.dumps(agent.procedural_memory, indent=2))
 
-        except ValueError as ve:
-            print(f"Configuration Error: {ve}")
+        except RuntimeError as re:
+            print(f"Runtime Error: {re}")
         except Exception as e:
-            print(f"An unexpected error occurred during the demo: {e}")
+            print(f"An unexpected error occurred during the Azure agent demo: {e}")
             import traceback
             traceback.print_exc()
-        
-        print("\n--- End of AzureOpenAIAgent Demo ---")
+
+        print("\n--- End of AzureOpenAIAgent MCP-Compliant Demo ---")

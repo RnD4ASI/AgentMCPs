@@ -1,155 +1,243 @@
-[
-  {
-    "name": "Standard HTTPS/JSON MCP",
-    "description": "A common MCP configuration using HTTPS for secure communication and JSON for data interchange.",
-    "version": "1.1.0",
-    "protocol_details": {
-      "type": "HTTPS",
-      "endpoint": "https://api.example.com/mcp",
-      "port": 443,
-      "method": "POST"
+{
+  "mcp_version": "1.0.0",
+  "models": [
+    {
+      "id": "azure-openai-gpt-35-turbo",
+      "name": "Azure OpenAI GPT-3.5 Turbo",
+      "type": "llm",
+      "provider": "AzureOpenAI",
+      "api_details": {
+        "api_key_env_var": "AZURE_OAI_KEY",
+        "endpoint_env_var": "AZURE_OAI_ENDPOINT",
+        "api_version": "2023-12-01-preview",
+        "deployment_name_env_var": "AZURE_OAI_LLM_DEPLOYMENT"
+      },
+      "capabilities": ["text_generation", "intent_recognition", "tool_use_json_output", "chat_completion"]
     },
-    "security_config": {
-      "auth_method": "OAuth2",
-      "encryption": "TLSv1.3",
-      "requires_client_certificate": false
+    {
+      "id": "openai-gpt-35-turbo",
+      "name": "OpenAI GPT-3.5 Turbo",
+      "type": "llm",
+      "provider": "OpenAI",
+      "api_details": {
+        "api_key_env_var": "OPENAI_API_KEY",
+        "model_name": "gpt-3.5-turbo"
+      },
+      "capabilities": ["text_generation", "intent_recognition", "tool_use_json_output", "chat_completion"]
     },
-    "data_format_preferences": {
-      "supported_formats": ["JSON", "XML"],
-      "default_format": "JSON",
-      "schema_validation": "strict"
+    {
+      "id": "anthropic-claude-3-haiku",
+      "name": "Anthropic Claude 3 Haiku",
+      "type": "llm",
+      "provider": "Anthropic",
+      "api_details": {
+        "api_key_env_var": "ANTHROPIC_API_KEY",
+        "model_name": "claude-3-haiku-20240307"
+      },
+      "capabilities": ["text_generation", "intent_recognition", "tool_use_json_output", "chat_completion"]
     },
-    "custom_properties": {
-      "region": "us-west-1",
-      "sla": "99.95%"
+    {
+      "id": "google-gemini-pro",
+      "name": "Google Gemini Pro",
+      "type": "llm",
+      "provider": "GoogleGemini",
+      "api_details": {
+        "api_key_env_var": "GEMINI_API_KEY",
+        "model_name": "gemini-pro"
+      },
+      "capabilities": ["text_generation", "intent_recognition", "tool_use_json_output", "content_generation"]
+    },
+    {
+      "id": "huggingface-gpt2-local",
+      "name": "HuggingFace GPT-2 (Local)",
+      "type": "llm",
+      "provider": "HuggingFace",
+      "api_details": {
+        "model_name_or_path": "gpt2",
+        "task": "text-generation",
+        "device_env_var": "HF_DEVICE"
+      },
+      "capabilities": ["text_generation", "intent_recognition_basic"]
     }
-  },
-  {
-    "name": "High-Performance gRPC MCP",
-    "description": "MCP over gRPC for low-latency, high-throughput communication, typically used in internal microservices.",
-    "version": "2.0.1",
-    "protocol_details": {
-      "type": "gRPC",
-      "service_name": "com.example.MCPService",
-      "endpoint": "grpc.example.com",
-      "port": 50051
+  ],
+  "skills": [
+    {
+      "id": "realtime_data_processor",
+      "name": "Real-time Data Processor Skill",
+      "description": "Processes, validates, and transforms real-time data streams.",
+      "handler_module": "custom_mcp_1",
+      "handler_class_or_function": "RealTimeStreamingMCP.process_stream_data",
+      "parameters": [
+        {
+          "name": "raw_data_json",
+          "type": "string",
+          "format": "json",
+          "description": "JSON string representing a list of data items to be processed.",
+          "is_required": true
+        }
+      ],
+      "expected_context": ["streaming_data_input_schema"],
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "status": {"type": "string", "enum": ["success", "partial_success", "failure"]},
+          "processed_count": {"type": "integer"},
+          "total_items": {"type": "integer"},
+          "errors": {"type": "array", "items": {"type": "string"}}
+        },
+        "description": "Summary of the stream processing. Processed data is handled by callbacks."
+      }
     },
-    "security_config": {
-      "auth_method": "mTLS",
-      "encryption": "TLSv1.3",
-      "requires_client_certificate": true
+    {
+      "id": "federated_model_aggregator",
+      "name": "Federated Model Aggregator Skill",
+      "description": "Manages rounds of federated learning and aggregates model updates.",
+      "handler_module": "custom_mcp_2",
+      "handler_class_or_function": "FederatedLearningMCP",
+      "parameters": [
+         {
+          "name": "action",
+          "type": "string",
+          "enum": ["start_new_round", "submit_model_update", "aggregate_updates", "get_global_model"],
+          "description": "The specific federated learning action to perform.",
+          "is_required": true
+        },
+        {
+          "name": "round_id",
+          "type": "integer",
+          "description": "Identifier for the learning round (required for start_new_round, submit_model_update, aggregate_updates).",
+          "is_required": false
+        },
+        {
+          "name": "participant_id",
+          "type": "string",
+          "description": "Unique ID for the participant submitting an update (required for submit_model_update).",
+          "is_required": false
+        },
+        {
+          "name": "model_update_json",
+          "type": "string",
+          "format": "json",
+          "description": "JSON string of the model update (required for submit_model_update).",
+          "is_required": false
+        }
+      ],
+      "expected_context": ["model_update_input_schema"],
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "status": {"type": "string"},
+          "message": {"type": "string"},
+          "current_round": {"type": "integer"},
+          "global_model_parameters": {"type": "object", "description": "Current global model parameters (structure varies)."}
+        },
+        "description": "Result of the federated learning action."
+      }
     },
-    "data_format_preferences": {
-      "supported_formats": ["protobuf"],
-      "default_format": "protobuf",
-      "protobuf_version": "proto3"
-    },
-    "custom_properties": {
-      "load_balancing": "round_robin",
-      "max_message_size_mb": 16
+    {
+      "id": "robust_message_handler",
+      "name": "Robust Message Handler Skill",
+      "description": "Processes messages with retry logic and DLQ integration for failures.",
+      "handler_module": "custom_mcp_3",
+      "handler_class_or_function": "RobustMCP.process_message",
+      "parameters": [
+        {
+          "name": "message_json",
+          "type": "string",
+          "format": "json",
+          "description": "JSON string representing the message to be processed.",
+          "is_required": true
+        }
+      ],
+      "expected_context": ["message_processing_input_schema"],
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "status": {"type": "string", "enum": ["success", "dlq_sent", "processing_error"]},
+          "message_id": {"type": "string"},
+          "details": {"type": "string"}
+        },
+        "description": "Outcome of the message processing attempt."
+      }
     }
-  },
-  {
-    "name": "IoT MQTT-based MCP",
-    "description": "Lightweight MCP configuration for IoT devices using MQTT for messaging.",
-    "version": "0.8.5",
-    "protocol_details": {
-      "type": "MQTT",
-      "broker_url": "mqtt://iot.example.com",
-      "port": 1883,
-      "topic_context_request": "mcp/request",
-      "topic_context_response": "mcp/response"
+  ],
+  "context_types": [
+    {
+      "id": "user_query_context",
+      "description": "Represents the raw query or instruction from the user.",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "query_text": {"type": "string"},
+          "timestamp": {"type": "string", "format": "date-time"},
+          "user_id": {"type": "string"}
+        },
+        "required": ["query_text"]
+      }
     },
-    "security_config": {
-      "auth_method": "TokenBased",
-      "encryption": "TLSv1.2 (optional)",
-      "username_secret_name": "mqtt_user_credentials"
+    {
+      "id": "factual_memory_snapshot",
+      "description": "A snapshot of the agent's factual memory.",
+      "schema": {
+        "type": "object",
+        "additionalProperties": {"type": "string"},
+        "description": "Key-value store of facts."
+      }
     },
-    "data_format_preferences": {
-      "supported_formats": ["JSON", "CBOR"],
-      "default_format": "CBOR",
-      "max_payload_size_kb": 128
+    {
+      "id": "procedural_memory_snapshot",
+      "description": "A snapshot of the agent's procedural memory.",
+      "schema": {
+        "type": "object",
+        "additionalProperties": {
+          "type": "object",
+          "properties": {
+            "steps": {"type": "array", "items": {"type": "string"}},
+            "last_used_timestamp": {"type": "number"}
+          }
+        },
+        "description": "Key-value store of tasks and their procedures."
+      }
     },
-    "custom_properties": {
-      "qos_level": 1,
-      "retain_messages": false
+    {
+      "id": "streaming_data_input_schema",
+      "description": "Defines the expected structure for items in a data stream.",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "sensor_id": {"type": "string"},
+          "timestamp": {"type": "integer"},
+          "value": {"type": "number"},
+          "metadata": {"type": "object"}
+        },
+        "required": ["sensor_id", "value"]
+      }
+    },
+    {
+      "id": "model_update_input_schema",
+      "description": "Defines the structure for model updates in federated learning.",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "weights_delta": {"type": "array", "items": {"type": "number"}},
+          "bias_delta": {"type": "number"},
+          "data_samples_count": {"type": "integer"}
+        },
+        "required": ["weights_delta", "bias_delta", "data_samples_count"]
+      }
+    },
+    {
+      "id": "message_processing_input_schema",
+      "description": "Defines the structure for messages to be processed robustly.",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "id": {"type": "string"},
+          "payload": {"type": "object"},
+          "metadata": {"type": "object"}
+        },
+        "required": ["id", "payload"]
+      }
     }
-  },
-  {
-    "name": "Legacy SOAP/XML MCP",
-    "description": "MCP configuration for integrating with legacy systems that expose SOAP/XML web services.",
-    "version": "1.0.0-legacy",
-    "protocol_details": {
-      "type": "SOAP",
-      "endpoint": "http://legacy.example.com/mcp_service",
-      "port": 8080,
-      "wsdl_url": "http://legacy.example.com/mcp_service?wsdl"
-    },
-    "security_config": {
-      "auth_method": "WS-Security (UsernameToken)",
-      "encryption": "None (Transport level via VPN recommended)",
-      "requires_client_certificate": false
-    },
-    "data_format_preferences": {
-      "supported_formats": ["XML"],
-      "default_format": "XML",
-      "xml_schema_url": "http://legacy.example.com/schemas/mcp.xsd"
-    },
-    "custom_properties": {
-      "timeout_seconds": 60,
-      "soap_action_required": true
-    }
-  },
-  {
-    "name": "Simple HTTP/CSV MCP for Batch Data",
-    "description": "A basic MCP setup for transferring batch context data in CSV format over HTTP.",
-    "version": "0.5.0",
-    "protocol_details": {
-      "type": "HTTP",
-      "endpoint": "http://batchdata.example.com/mcp_upload",
-      "port": 80,
-      "method": "PUT"
-    },
-    "security_config": {
-      "auth_method": "APIKey",
-      "api_key_header": "X-API-KEY",
-      "encryption": "None (intended for internal networks or use VPN)"
-    },
-    "data_format_preferences": {
-      "supported_formats": ["CSV"],
-      "default_format": "CSV",
-      "csv_delimiter": ",",
-      "includes_header_row": true
-    },
-    "custom_properties": {
-      "data_retention_policy_days": 30,
-      "expected_file_encoding": "UTF-8"
-    }
-  },
-  {
-    "name": "Secure File Transfer (SFTP) MCP",
-    "description": "MCP configuration for exchanging context models as files over SFTP.",
-    "version": "1.2.0",
-    "protocol_details": {
-      "type": "SFTP",
-      "host": "sftp.example.com",
-      "port": 22,
-      "upload_directory": "/uploads/mcp",
-      "download_directory": "/downloads/mcp"
-    },
-    "security_config": {
-      "auth_method": "PublicKey",
-      "username": "mcp_user",
-      "requires_client_private_key": true
-    },
-    "data_format_preferences": {
-      "supported_formats": ["JSON", "XML", "YAML", "ProprietaryBinary"],
-      "default_format": "JSON",
-      "filename_convention": "model_{timestamp}_{version}.json"
-    },
-    "custom_properties": {
-      "transfer_mode": "binary",
-      "checksum_validation": "SHA256"
-    }
-  }
-]
+  ]
+}

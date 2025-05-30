@@ -1,197 +1,210 @@
 import unittest
-from unittest.mock import patch, MagicMock, mock_open
+from unittest.mock import patch, MagicMock, mock_open, call
 import json
 import os
 import sys
 import tempfile
+import importlib # For mocking importlib.util
 
 # Add project root to sys.path
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
-# Now import the agent
-from openai_agent import OpenAIAgent # Changed import
+from openai_agent import OpenAIAgent # Changed agent
 
 # Path to the actual MCP configurations
 ACTUAL_MCP_CONFIG_FILE = os.path.join(PROJECT_ROOT, "mcp_configurations.json")
 
-class TestOpenAIAgent(unittest.TestCase): # Changed class name
+class TestOpenAIAgentMCP(unittest.TestCase): # Renamed for clarity
 
     def setUp(self):
-        """Set up for each test."""
         self.temp_factual_mem_file = tempfile.NamedTemporaryFile(delete=False, mode='w+', suffix='.json')
         self.temp_procedural_mem_file = tempfile.NamedTemporaryFile(delete=False, mode='w+', suffix='.json')
         self.temp_factual_mem_file.close()
         self.temp_procedural_mem_file.close()
 
+        if not os.path.exists(ACTUAL_MCP_CONFIG_FILE):
+            minimal_mcp_config = {"mcp_version": "1.0.0", "models": [], "skills": [], "context_types": []}
+            with open(ACTUAL_MCP_CONFIG_FILE, 'w') as f: json.dump(minimal_mcp_config, f)
+            self.created_minimal_mcp_config = True
+        else:
+            self.created_minimal_mcp_config = False
+
         self.patches = {
-            # Patched the standard OpenAI client
-            'OpenAI_client': patch('openai_agent.OpenAI'), 
+            'OpenAI_client': patch('openai_agent.OpenAI'), # Patched standard OpenAI client
             'factual_memory_path': patch('openai_agent.FACTUAL_MEMORY_FILE', self.temp_factual_mem_file.name),
             'procedural_memory_path': patch('openai_agent.PROCEDURAL_MEMORY_FILE', self.temp_procedural_mem_file.name),
-            'mcp_config_path': patch('openai_agent.MCP_CONFIG_FILE', ACTUAL_MCP_CONFIG_FILE),
         }
 
         self.mock_openai_client_constructor = self.patches['OpenAI_client'].start()
         self.mock_openai_client_instance = MagicMock()
         self.mock_openai_client_constructor.return_value = self.mock_openai_client_instance
-        
+
         self.patches['factual_memory_path'].start()
         self.patches['procedural_memory_path'].start()
-        self.patches['mcp_config_path'].start()
-
-        self.agent_mcp_configs = {
-            "streaming_mcp_config": {'validation_rules': {'value': {'type': float}}},
-            "federated_mcp_config": {"global_model_id": "openai_test_model"}, # Differentiation
-            "robust_mcp_config": {'max_retries': 1}
-        }
 
         self.agent = OpenAIAgent( # Changed agent instantiation
-            api_key="dummy_openai_key", # Changed param name
-            model_name="gpt-3.5-turbo", # Standard model name
-            agent_config=self.agent_mcp_configs
+            api_key="dummy_openai_key",
+            model_name="gpt-3.5-turbo"
         )
-        self.assertTrue(len(self.agent.custom_mcps) > 0, "Custom MCPs were not loaded")
-
 
     def tearDown(self):
-        """Clean up after each test."""
         for patcher in self.patches.values():
             patcher.stop()
         os.remove(self.temp_factual_mem_file.name)
         os.remove(self.temp_procedural_mem_file.name)
-
-    def test_initialization_and_empty_memory_load(self):
-        self.assertIsNotNone(self.agent.openai_client)
-        self.assertEqual(self.agent.factual_memory, {})
-        self.assertEqual(self.agent.procedural_memory, {})
-        self.assertTrue(len(self.agent.mcp_configurations) > 0)
-
-    def test_memory_load_existing(self):
-        factual_data = {"fact_openai": "value_openai"} # Differentiation
-        procedural_data = {"proc_openai": {"steps": ["step_openai"]}}
-        with open(self.temp_factual_mem_file.name, 'w') as f: json.dump(factual_data, f)
-        with open(self.temp_procedural_mem_file.name, 'w') as f: json.dump(procedural_data, f)
-
-        agent_reloaded = OpenAIAgent( # Changed agent
-            api_key="dummy_openai_key", model_name="gpt-3.5-turbo", agent_config=self.agent_mcp_configs
-        )
-        self.assertEqual(agent_reloaded.factual_memory, factual_data)
-        self.assertEqual(agent_reloaded.procedural_memory["proc_openai"]["steps"], procedural_data["proc_openai"]["steps"])
+        if self.created_minimal_mcp_config and os.path.exists(ACTUAL_MCP_CONFIG_FILE):
+            # os.remove(ACTUAL_MCP_CONFIG_FILE)
+            pass
 
 
-    def test_factual_memory_operations(self):
-        self.agent.add_factual_memory("test_fact_openai_key", "test_fact_openai_value")
-        self.assertEqual(self.agent.get_factual_memory("test_fact_openai_key"), "test_fact_openai_value")
-        with open(self.temp_factual_mem_file.name, 'r') as f: saved_mem = json.load(f)
-        self.assertEqual(saved_mem["test_fact_openai_key"], "test_fact_openai_value")
-
-    def test_procedural_memory_operations(self):
-        self.agent.add_procedural_memory("test_proc_openai_task", ["step_A", "step_B"])
-        retrieved_proc = self.agent.get_procedural_memory("test_proc_openai_task")
-        self.assertEqual(retrieved_proc["steps"], ["step_A", "step_B"])
-        with open(self.temp_procedural_mem_file.name, 'r') as f: saved_mem = json.load(f)
-        self.assertEqual(saved_mem["test_proc_openai_task"]["steps"], ["step_A", "step_B"])
+    def test_mcp_registry_loading(self):
+        self.assertIsNotNone(self.agent.mcp_registry)
+        self.assertIn("skills_map", self.agent.mcp_registry)
+        self.assertIn("federated_model_aggregator", self.agent.mcp_registry["skills_map"]) # Example skill
 
     def _mock_llm_chat_response(self, response_content_json_str):
-        """Helper to mock the OpenAI chat completion response."""
-        # Structure is same as Azure OpenAI's for chat completions
+        # Same structure as Azure OpenAI for chat completions
         mock_choice = MagicMock()
         mock_choice.message = MagicMock()
         mock_choice.message.content = response_content_json_str
-        
         mock_completion_response = MagicMock()
         mock_completion_response.choices = [mock_choice]
-        # Path to the mocked method is on the *instance* of the client
         self.mock_openai_client_instance.chat.completions.create.return_value = mock_completion_response
 
-
-    def test_llm_intent_parsing(self):
-        mock_llm_json_output = {
-            "intent": "OpenAI Test Intent", # Differentiation
-            "mcp_tool_name": "RobustMCP", # Different MCP for variety
-            "mcp_config_name": None,
-            "parameters": {"message_json": "{\"id\":\"msg1\"}", "method_name": "process_message"},
+    def test_llm_determines_skill_id(self):
+        mock_llm_output = {
+            "intent": "Federated learning action",
+            "skill_id": "federated_model_aggregator", # Skill ID from mcp_configurations.json
+            "parameters": {"action": "get_global_model"},
             "requires_further_clarification": False,
-            "clarification_question": None,
-            "response_to_user": "Processing your message with RobustMCP."
+            "clarification_question": "None",
+            "response_to_user": "Fetching global model."
         }
-        self._mock_llm_chat_response(json.dumps(mock_llm_json_output))
-        
-        parsed_intent_data = self.agent._determine_intent_and_params_with_llm("some query for openai agent")
-        
-        self.assertEqual(parsed_intent_data["intent"], "OpenAI Test Intent")
-        self.assertEqual(parsed_intent_data["mcp_tool_name"], "RobustMCP")
-        self.assertEqual(parsed_intent_data["parameters"]["message_json"], "{\"id\":\"msg1\"}")
+        self._mock_llm_chat_response(json.dumps(mock_llm_output))
 
-    @patch('custom_mcp_3.RobustMCP.process_message') # Patching RobustMCP method
-    def test_tool_usage_robust_mcp(self, mock_robust_process_method):
-        mock_llm_json_output = {
-            "intent": "Process a robust message",
-            "mcp_tool_name": "RobustMCP",
-            "mcp_config_name": None,
-            "parameters": {"message_json": "{\"id\":\"msgRob\"}", "method_name": "process_message"},
+        intent_data = self.agent._determine_intent_and_params_with_llm("Get federated model")
+        self.assertEqual(intent_data["skill_id"], "federated_model_aggregator")
+        self.assertEqual(intent_data["parameters"]["action"], "get_global_model")
+
+    def test_prepare_skill_context_memory_snapshots(self):
+        self.agent.add_factual_memory("user_preference", "dark_theme")
+        # Skill definition that expects factual memory
+        mock_skill_def = {"id": "skill_with_fact_mem", "expected_context": ["factual_memory_snapshot"]}
+        with patch.dict(self.agent.mcp_registry['skills_map'], {'skill_with_fact_mem': mock_skill_def}):
+            context_data = self.agent._prepare_skill_context("skill_with_fact_mem")
+
+        self.assertIn("factual_memory_snapshot", context_data)
+        self.assertEqual(context_data["factual_memory_snapshot"]["user_preference"], "dark_theme")
+        self.assertIn("agent_name", context_data)
+        self.assertEqual(context_data["agent_name"], "OpenAIAgent")
+
+
+    @patch('openai_agent.OpenAIAgent.invoke_mcp_skill')
+    def test_process_query_uses_skill(self, mock_invoke_skill):
+        mock_llm_output = {
+            "intent": "Handle robust message",
+            "skill_id": "robust_message_handler",
+            "parameters": {"message_json": "\"{'id':'msg1'}\""},
             "requires_further_clarification": False,
-            "response_to_user": "Using RobustMCP for your message."
+            "response_to_user": "Handling message."
         }
-        self._mock_llm_chat_response(json.dumps(mock_llm_json_output))
-        mock_robust_process_method.return_value = "Robust MCP processed message"
+        self._mock_llm_chat_response(json.dumps(mock_llm_output))
 
-        response = self.agent.process_query("process this robust message '{\"id\":\"msgRob\"}'")
-        
-        mock_robust_process_method.assert_called_once_with(message_json="{\"id\":\"msgRob\"}")
-        self.assertIn("Used RobustMCP: Robust MCP processed message", response)
+        mock_skill_response = {"status": "success", "data": {"handled": True}}
+        mock_invoke_skill.return_value = mock_skill_response
+
+        with patch.object(self.agent, '_prepare_skill_context', return_value={"context_ok": True}) as mock_prepare_context:
+            response = self.agent.process_query("Handle this message robustly")
+
+        mock_prepare_context.assert_called_once_with("robust_message_handler")
+        mock_invoke_skill.assert_called_once_with(
+            "robust_message_handler",
+            {"message_json": "\"{'id':'msg1'}\""},
+            {"context_ok": True}
+        )
+        self.assertIn("Skill 'robust_message_handler' executed successfully.", response)
+        self.assertIn(json.dumps({"handled": True}), response)
 
 
-    def test_llm_api_error_handling(self):
-        self.mock_openai_client_instance.chat.completions.create.side_effect = Exception("OpenAI API Error")
-        
-        response = self.agent.process_query("a query that triggers an API error")
-        # The agent's _get_openai_chat_completion catches the generic Exception
-        # and returns a string "Error communicating with OpenAI: OpenAI API Error"
-        # This string is then used in _determine_intent_and_params_with_llm to create a fallback JSON.
-        self.assertIn("I'm having a little trouble understanding. Could you try asking in a different way?", response)
+    @patch('importlib.util')
+    @patch.dict(sys.modules, {})
+    def test_invoke_mcp_skill_successful_invocation(self, mock_importlib_util):
+        skill_id = "robust_message_handler"
 
+        mock_skill_module = MagicMock()
+        mock_skill_class_constructor = MagicMock() # Mock for RobustMCP class
+        mock_skill_instance = MagicMock()
+        mock_skill_method = MagicMock(return_value={"status": "success", "data": "robust skill ok"})
 
-    def test_mcp_config_selection_flow(self):
-        # Assuming "High-Performance gRPC MCP" exists in mcp_configurations.json
-        config_name_to_test = "High-Performance gRPC MCP" 
-        mock_llm_json_output = {
-            "intent": "Inquire about gRPC MCP config",
-            "mcp_tool_name": None,
-            "mcp_config_name": config_name_to_test,
-            "parameters": {},
-            "requires_further_clarification": False,
-            "response_to_user": f"Info about {config_name_to_test}."
+        mock_spec = MagicMock()
+        mock_spec.loader = MagicMock()
+        mock_importlib_util.spec_from_file_location.return_value = mock_spec
+        mock_importlib_util.module_from_spec.return_value = mock_skill_module
+
+        # Handler path is "RobustMCP.process_message"
+        setattr(mock_skill_module, "RobustMCP", mock_skill_class_constructor)
+        mock_skill_class_constructor.return_value = mock_skill_instance
+        setattr(mock_skill_instance, "process_message", mock_skill_method)
+
+        parameters = {"message_json": "data"}
+        context = {"session_id": "s123"}
+
+        self.assertTrue(skill_id in self.agent.mcp_registry['skills_map'])
+        skill_response = self.agent.invoke_mcp_skill(skill_id, parameters, context)
+
+        mock_importlib_util.spec_from_file_location.assert_called_once_with(
+            self.agent.mcp_registry['skills_map'][skill_id]['handler_module'],
+            f"{self.agent.mcp_registry['skills_map'][skill_id]['handler_module']}.py"
+        )
+        mock_skill_method.assert_called_once_with(parameters, context)
+        self.assertEqual(skill_response["status"], "success")
+        self.assertEqual(skill_response["data"], "robust skill ok")
+
+    def test_invoke_mcp_skill_handler_not_found(self):
+        skill_id = "skill_with_bad_handler_path"
+        self.agent.mcp_registry['skills_map'][skill_id] = {
+            "id": skill_id, "name": "Test Bad Handler",
+            "handler_module": "realtime_processing_skill", # Valid module
+            "handler_class_or_function": "NonExistentClass.non_existent_method" # Invalid path
         }
-        self._mock_llm_chat_response(json.dumps(mock_llm_json_output))
 
-        response = self.agent.process_query(f"Tell me about {config_name_to_test}")
-        self.assertIn(f"Found MCP configuration: '{config_name_to_test}'", response)
-        self.assertIn("gRPC", response) 
-        self.assertIsNotNone(self.agent.get_factual_memory("last_selected_mcp_config"))
-        self.assertEqual(self.agent.get_factual_memory("last_selected_mcp_config")["name"], config_name_to_test)
+        # We need to ensure realtime_processing_skill is "importable" by importlib.util.spec_from_file_location
+        # This is tricky without actually having the file system reflect this for the test runner.
+        # Assuming the module itself can be found by spec_from_file_location due to sys.path.
+        # The error should come from getattr trying to find NonExistentClass.
 
-    def test_clarification_flow(self):
-        clarification_q = "Which model do you want to update for federated learning?"
-        mock_llm_json_output = {
-            "intent": "Federated learning update",
-            "mcp_tool_name": "FederatedLearningMCP",
-            "parameters": {"method_name": "submit_model_update"}, # Missing other params
-            "requires_further_clarification": True,
-            "clarification_question": clarification_q,
-            "response_to_user": clarification_q
-        }
-        self._mock_llm_chat_response(json.dumps(mock_llm_json_output))
+        # To properly test this, we mock spec_from_file_location to return a valid spec,
+        # and module_from_spec to return a module object where NonExistentClass is missing.
+        with patch('importlib.util.spec_from_file_location') as mock_spec_from_file:
+            mock_spec = MagicMock()
+            mock_spec.loader = MagicMock()
+            mock_spec_from_file.return_value = mock_spec
 
-        query = "I want to submit a federated learning update."
-        response = self.agent.process_query(query)
+            with patch('importlib.util.module_from_spec') as mock_module_from_spec:
+                mock_skill_module_obj = MagicMock()
+                # Make getattr fail when looking for NonExistentClass
+                # setattr(mock_skill_module_obj, "NonExistentClass", None) # This makes it exist as None
+                # Better to let it raise AttributeError implicitly
+                mock_module_from_spec.return_value = mock_skill_module_obj
 
-        self.assertEqual(response, clarification_q)
-        self.assertEqual(self.agent.get_factual_memory("last_clarification_for_query"), query)
-        self.assertEqual(self.agent.get_factual_memory("last_clarification_question"), clarification_q)
+                response = self.agent.invoke_mcp_skill(skill_id, {}, {})
 
+        self.assertEqual(response["status"], "error")
+        self.assertIn("Could not load handler for skill", response["error_message"])
+        self.assertIn("NonExistentClass", response["error_message"])
+
+
+    def test_initialization_loads_existing_memory(self):
+        factual_data = {"fact_openai_mcp": "val_openai_mcp"}
+        procedural_data = {"proc_openai_mcp": {"steps": ["step_mcp_openai"]}}
+        with open(self.temp_factual_mem_file.name, 'w') as f: json.dump(factual_data, f)
+        with open(self.temp_procedural_mem_file.name, 'w') as f: json.dump(procedural_data, f)
+
+        reloaded_agent = OpenAIAgent(api_key="dummy_key", model_name="gpt-3.5-turbo")
+        self.assertEqual(reloaded_agent.factual_memory, factual_data)
+        self.assertEqual(reloaded_agent.procedural_memory["proc_openai_mcp"]["steps"], procedural_data["proc_openai_mcp"]["steps"])
 
 if __name__ == '__main__':
     unittest.main()

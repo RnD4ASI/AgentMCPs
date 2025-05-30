@@ -58,7 +58,7 @@ class RealTimeStreamingMCP:
                 errors.append(f"Value for {field} ({value}) is less than min ({rule['min']})")
             if 'max' in rule and value > rule['max']:
                 errors.append(f"Value for {field} ({value}) is greater than max ({rule['max']})")
-        
+
         if errors:
             print(f"Validation failed for {data_item}: {errors}")
             return False, errors
@@ -76,7 +76,7 @@ class RealTimeStreamingMCP:
         """
         transformed_item = data_item.copy()
         transform_map = self.config.get('transformation_map', {})
-        
+
         # Example: Convert temperature from Celsius to Fahrenheit
         if 'temperature_celsius' in transformed_item and 'temperature_celsius' in transform_map:
             celsius = transformed_item['temperature_celsius']
@@ -87,14 +87,14 @@ class RealTimeStreamingMCP:
                     del transformed_item['temperature_celsius'] # remove old key if desired
                 else: # or a simple rename
                     new_key = transform_map['temperature_celsius']
-                    transformed_item[new_key] = (celsius * 9/5) + 32 
+                    transformed_item[new_key] = (celsius * 9/5) + 32
                     if new_key != 'temperature_celsius':
                          del transformed_item['temperature_celsius']
 
         # Example: Add a processing timestamp
         if 'add_timestamp' in transform_map and transform_map['add_timestamp']:
             transformed_item['processing_timestamp_utc'] = time.time()
-            
+
         print(f"Data transformed from {data_item} to {transformed_item}")
         return transformed_item
 
@@ -138,7 +138,7 @@ def example_data_consumer(processed_data):
 
 if __name__ == '__main__':
     print("--- RealTimeStreamingMCP Demo ---")
-    
+
     # Configuration for the MCP
     mcp_config = {
         'validation_rules': {
@@ -160,7 +160,7 @@ if __name__ == '__main__':
     raw_stream_data_1 = """
     [
         {"sensor_id": "A101", "timestamp": 1678886400, "temperature_celsius": 22.5, "humidity_percent": 45.0},
-        {"sensor_id": "B202", "timestamp": 1678886405, "temperature_celsius": -60.0, "humidity_percent": 50.0} 
+        {"sensor_id": "B202", "timestamp": 1678886405, "temperature_celsius": -60.0, "humidity_percent": 50.0}
     ]
     """
     streaming_mcp.process_stream_data(raw_stream_data_1)
@@ -168,13 +168,13 @@ if __name__ == '__main__':
     raw_stream_data_2 = """
     [
         {"sensor_id": "C303", "timestamp": 1678886410, "temperature_celsius": 30.1, "humidity_percent": 60.2, "pressure_hpa": 1012},
-        {"sensor_id": "D404", "timestamp": 1500000000, "temperature_celsius": 25.0} 
+        {"sensor_id": "D404", "timestamp": 1500000000, "temperature_celsius": 25.0}
     ]
     """
     # Note: C303 has an extra field 'pressure_hpa' (should be fine)
     # Note: D404 has old timestamp and missing humidity_percent (should fail validation)
     streaming_mcp.process_stream_data(raw_stream_data_2)
-    
+
     raw_stream_data_3 = '[{"sensor_id": "E505", "timestamp": 1678886415, "temperature_celsius": "hot", "humidity_percent": 75.0}]' # invalid temp type
     streaming_mcp.process_stream_data(raw_stream_data_3)
 

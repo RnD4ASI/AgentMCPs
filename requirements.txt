@@ -1,0 +1,6 @@
+openai
+azure-ai-openai
+google-generativeai
+anthropic
+transformers
+torch
