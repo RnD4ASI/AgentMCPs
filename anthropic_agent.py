@@ -3,7 +3,10 @@ import json
 import importlib.util
 import time
 import logging
+import uuid # Added for A2A agent_id
 from anthropic import Anthropic # Anthropic library
+
+from a2a_protocol import AgentCard, A2ATask, A2AClient # A2A imports
 
 # Setup basic logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -69,7 +72,14 @@ class AnthropicAgent:
         
         self.mcp_configurations = self._load_mcp_configs(MCP_CONFIG_FILE)
         self.custom_mcps = self._load_custom_mcps()
-        logging.info("Agent initialized with memory and MCP tools.")
+
+        # A2A Initialization
+        self.a2a_client = A2AClient()
+        self.agent_id = f"anthropic-agent-{str(uuid.uuid4())}"
+        self.a2a_endpoint_url = f"http://localhost:8002/a2a/{self.agent_id}" # Example endpoint
+        logging.info(f"A2A Client initialized. Agent ID: {self.agent_id}, Endpoint: {self.a2a_endpoint_url}")
+
+        logging.info("Agent initialized with memory, MCP tools, and A2A capabilities.")
 
     def _load_memory(self, filepath):
         """Loads memory from a JSON file."""
@@ -366,6 +376,11 @@ The user's query is: <user_query>{query}</user_query>
         logging.info(f"\n--- Processing Query: '{query}' ---")
 
         intent_data = self._determine_intent_and_params_with_llm(query)
+
+        # TODO: A2A Delegation Point
+        # If intent_data suggests a capability better handled by another agent,
+        # discover that agent and use self.a2a_client.send_task_request.
+
         response_to_user = intent_data.get("response_to_user", "I'm processing your request.")
         
         if intent_data.get("requires_further_clarification"):
@@ -421,6 +436,99 @@ The user's query is: <user_query>{query}</user_query>
         logging.info(f"Final Response: {response_to_user}")
         return response_to_user
 
+    def get_agent_card(self) -> AgentCard:
+        """Constructs and returns the AgentCard for this agent."""
+        capabilities = []
+        for mcp_name, mcp_instance in self.custom_mcps.items():
+            docstring = mcp_instance.__doc__.splitlines()[0].strip() if mcp_instance.__doc__ else f"Default capability for {mcp_name}"
+
+            params_schema = []
+            default_methods = {
+                "RealTimeStreamingMCP": "process_stream_data",
+                "FederatedLearningMCP": "get_global_model",
+                "RobustMCP": "process_message"
+            }
+            method_name = default_methods.get(mcp_name, "execute")
+
+            if mcp_name == "RealTimeStreamingMCP" and hasattr(mcp_instance, "process_stream_data"):
+                params_schema.append(
+                    {"name": "raw_data_json", "type": "string", "required": True, "description": "JSON string of the raw data stream."}
+                )
+                capability_name = f"{mcp_name}_process_stream_data"
+                description = f"Processes real-time streaming data using {mcp_name}."
+            elif mcp_name == "FederatedLearningMCP" and hasattr(mcp_instance, "get_global_model"):
+                 capability_name = f"{mcp_name}_get_global_model"
+                 description = f"Retrieves the global model using {mcp_name}."
+            elif mcp_name == "RobustMCP" and hasattr(mcp_instance, "process_message"):
+                params_schema.append(
+                    {"name": "message", "type": "object", "required": True, "description": "The message object to process."}
+                )
+                capability_name = f"{mcp_name}_process_message"
+                description = f"Processes a message robustly using {mcp_name}."
+            else:
+                capability_name = f"{mcp_name}_{method_name}"
+                description = docstring
+                params_schema.append(
+                    {"name": "params", "type": "object", "required": False, "description": f"Parameters for {method_name} of {mcp_name}."}
+                )
+
+            capabilities.append({
+                "name": capability_name,
+                "description": description,
+                "parameters": params_schema,
+                "returns": {"type": "object", "description": f"Result of {capability_name} execution."}
+            })
+
+        return AgentCard(
+            agent_id=self.agent_id,
+            name="Anthropic Assistant Agent",
+            description="An agent powered by Anthropic Claude, capable of general queries and using specialized MCP tools.",
+            version="1.0.0",
+            capabilities=capabilities,
+            endpoint_url=self.a2a_endpoint_url,
+            documentation_url=None
+        )
+
+    def handle_a2a_task_request(self, task_data: dict) -> dict:
+        """
+        Handles an incoming A2A task request.
+        Simulates task execution for now.
+        """
+        logging.info(f"Received A2A task request in AnthropicAgent: {json.dumps(task_data, indent=2)}")
+        try:
+            task = A2ATask.from_dict(task_data)
+            logging.info(f"Parsed A2A Task in AnthropicAgent: {task.to_json()}")
+
+            agent_capabilities = self.get_agent_card().capabilities
+            is_capable = any(cap['name'] == task.capability_name for cap in agent_capabilities)
+
+            if is_capable:
+                logging.info(f"Simulating execution of A2A capability: {task.capability_name} with params: {task.parameters} in AnthropicAgent")
+                # TODO: Implement actual task execution logic, potentially calling self.use_custom_mcp
+                return {
+                    "jsonrpc": "2.0",
+                    "result": {
+                        "taskId": task.task_id,
+                        "status": "completed",
+                        "artifacts": [{"type": "text", "content": f"Successfully executed {task.capability_name} via AnthropicAgent"}]
+                    },
+                    "id": task_data.get("id")
+                }
+            else:
+                logging.warning(f"Capability '{task.capability_name}' not found for A2A task {task.task_id} in AnthropicAgent.")
+                return {
+                    "jsonrpc": "2.0",
+                    "error": {"code": -32601, "message": "Method not found", "data": f"Capability '{task.capability_name}' not implemented by AnthropicAgent {self.agent_id}."},
+                    "id": task_data.get("id")
+                }
+        except Exception as e:
+            logging.error(f"Error handling A2A task in AnthropicAgent: {e}", exc_info=True)
+            return {
+                "jsonrpc": "2.0",
+                "error": {"code": -32000, "message": str(e)},
+                "id": task_data.get("id")
+            }
+
 # Example Usage
 if __name__ == '__main__':
     ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY")
@@ -474,6 +582,37 @@ if __name__ == '__main__':
             print("\n--- Final Memory States ---")
             print(f"Factual Memory: {json.dumps(agent.factual_memory, indent=2)}")
             print(f"Procedural Memory: {json.dumps(agent.procedural_memory, indent=2)}")
+
+            print("\n--- Anthropic Agent Card ---")
+            agent_card = agent.get_agent_card()
+            print(agent_card.to_json())
+
+            print("\n--- Anthropic A2A Task Handling Simulation ---")
+            sample_a2a_task_data = {
+                "taskId": "a2a-anthropic-task-001",
+                "clientAgentId": "test-client-for-anthropic",
+                "remoteAgentId": agent.agent_id,
+                "capabilityName": "RobustMCP_process_message", # Example capability
+                "parameters": {"message": {"id": "msg001", "payload": "Test A2A to Anthropic"}},
+                "id": "rpc-anthropic-123" # if it's part of a JSON-RPC call
+            }
+            # If the task_data itself is the 'params' of a JSON-RPC call, adjust accordingly
+            # For consistency with OpenAI agent, let's assume task_data is the content of "params"
+
+            # Simulating the structure where task_data is the task object itself
+            a2a_response = agent.handle_a2a_task_request(sample_a2a_task_data)
+            print(f"A2A Task Response (Anthropic): {json.dumps(a2a_response, indent=2)}")
+
+            sample_a2a_task_data_invalid = {
+                "taskId": "a2a-anthropic-task-002",
+                "clientAgentId": "test-client-for-anthropic",
+                "remoteAgentId": agent.agent_id,
+                "capabilityName": "ImaginaryMCP_do_magic",
+                "parameters": {},
+                "id": "rpc-anthropic-456"
+            }
+            a2a_response_invalid = agent.handle_a2a_task_request(sample_a2a_task_data_invalid)
+            print(f"A2A Task Response (Anthropic, Invalid Task): {json.dumps(a2a_response_invalid, indent=2)}")
 
         except ValueError as ve:
             print(f"Configuration Error: {ve}")
